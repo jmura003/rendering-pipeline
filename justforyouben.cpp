@@ -224,7 +224,7 @@ void left_bottom_near(driver_state & state, const data_geometry * in[3], int i, 
         new_data[0] = &temp[0];
         new_data[1] = &temp[1];
         new_data[2] = in[2];
-        clip_triangle(state,new_data,face++);
+        clip_triangle(state,new_data,face+1);
     }
 }
 
@@ -243,7 +243,7 @@ void clip_triangle(driver_state& state, const data_geometry* in[3], int face)
 
             //face++;
             std::cout << "case 0\n";
-            right_top_far(state, in, 2, 0);
+            right_top_far(state, in, 0, 0);
             //clip_triangle(state,in,face+1);
             break;
         }
@@ -253,7 +253,7 @@ void clip_triangle(driver_state& state, const data_geometry* in[3], int face)
             //left_bottom_near(state,in,0,face);
             //clip_triangle(state,in,face+1);
             std::cout << "case 1\n";
-            left_bottom_near(state,in,2,1);
+            left_bottom_near(state,in,0,1);
             //face++;
             break;
         }
@@ -262,7 +262,7 @@ void clip_triangle(driver_state& state, const data_geometry* in[3], int face)
         {
             //face++;
             std::cout << "case 2\n";
-            right_top_far(state, in, 2, 2);
+            right_top_far(state, in, 1, 2);
             //clip_triangle(state,in,face+1);
             break;
         }
@@ -272,7 +272,7 @@ void clip_triangle(driver_state& state, const data_geometry* in[3], int face)
             //face++;
             //clip_triangle(state,in,face+1);
             std::cout << "case 3\n";
-            left_bottom_near(state,in,2,3);
+            left_bottom_near(state,in,1,3);
             break;
         }
 
