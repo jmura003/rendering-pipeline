@@ -79,7 +79,7 @@ void render(driver_state& state, render_type type)
             data_geometry d_geo[3];
             data_vertex v[3];        
 
-            for(int i = 0; i < 3*state.num_triangles ; i += state.floats_per_vertex){
+            for(int i = 0; i < 3*state.num_triangles ; i += 3){
                 for (int j = 0; j < 3; j++) {
                 v[j].data = &state.vertex_data[state.index_data[i + j] * state.floats_per_vertex];
     
@@ -191,7 +191,7 @@ void left_bottom_near(driver_state & state, const data_geometry * in[3], int i, 
         //}       
     }
 
-    if(a[2] < -a[3] && b[2] >= -b[3] && c[2] < -c[3]){ //b is in
+    if(a[i] < -a[3] && b[i] >= -b[3] && c[i] < -c[3]){ //b is in
         float ab;
         float bc;
         ab = (-1*b[3] - b[i]) / (a[i] + a[3] - b[3] - b[i]);
@@ -350,7 +350,7 @@ void left_bottom_near(driver_state & state, const data_geometry * in[3], int i, 
             }
             temp1.gl_Position = a_to_b;
             new_data[0] = in[0];
-            new_data[1] =  
+            new_data[1] =  &temp1;
             new_data[2] = in[2];
             clip_triangle(state, new_data, face+1);
         }
