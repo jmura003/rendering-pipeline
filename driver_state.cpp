@@ -1,6 +1,5 @@
 #include "driver_state.h"
 #include <cstring>
-#include <limits>
 
 driver_state::driver_state()
 {
@@ -28,6 +27,7 @@ void initialize_render(driver_state& state, int width, int height)
     for (int i = 0; i < (height * width); i++){
         //state.image_depth[i] = std::numeric_limits<float>::max();
         state.image_depth[i] = 1;
+        
     }
     //std::cout<<"TODO: allocate and initialize state.image_color and state.image_depth."<<std::endl;
 }
@@ -75,23 +75,70 @@ void render(driver_state& state, render_type type)
 
         case render_type::indexed:
         {
-            // const data_geometry * out[3];
-            // data_geometry d_geo[3];
-            // data_vertex v[3];        
+            const data_geometry * out[3];
+            data_geometry d_geo[3];
+            data_vertex v[3];        
 
-            // for(int i = 0,j = 0; i < 3*state.num_triangles ; i++, j++){
-            //     v[i].data = (float*)state.index_data[i];
-            //     std::cout << v[i].data << std::endl;
-            // }
-            // break;
+            for(int i = 0; i < 3*state.num_triangles ; i += 3){
+                for (int j = 0; j < 3; j++) {
+                v[j].data = &state.vertex_data[state.index_data[i + j] * state.floats_per_vertex];
+    
+                d_geo[j].data = v[j].data;
+
+                state.vertex_shader(v[j], d_geo[j], state.uniform_data);
+
+                out[j] = &d_geo[j];
+
+                }
+                clip_triangle(state,out,0);
+            }
+            break;
+
         }
         case render_type::fan:
+        {
+            const data_geometry * out[3];
+            data_geometry d_geo[3];
+            data_vertex v[3];        
 
-        break;
+            for(int i = 0; i < state.num_vertices; i++){
+                for (int j = 0; j < 3; j++) {
+                    int index = i + j;
+                    if(j == 0){
+                        index = 0;
+                    }
+                    v[j].data = &state.vertex_data[index * state.floats_per_vertex];
+        
+                    d_geo[j].data = v[j].data;
+    
+                    state.vertex_shader(v[j], d_geo[j], state.uniform_data);
 
+                    out[j] = &d_geo[j];
+
+                }
+                clip_triangle(state,out,0);
+            }
+            break;
+        }
         case render_type::strip:
+        {
+            const data_geometry * out[3];
+            data_geometry d_geo[3];
+            data_vertex v[3];  
+            for(int i = 0; i < state.num_vertices-2; i++){
+                for(int j = 0; j < 3; j++){
+                    v[j].data = &state.vertex_data[(i + j)*state.floats_per_vertex];
+    
+                    d_geo[j].data = v[j].data;
 
-        break;
+                    state.vertex_shader(v[j], d_geo[j], state.uniform_data);
+
+                    out[j] = &d_geo[j];
+                }
+                clip_triangle(state,out,0);
+            }
+            break;
+        }
 
         case render_type::invalid:
 
@@ -100,821 +147,452 @@ void render(driver_state& state, render_type type)
 }
 
 
-// This function clips a triangle (defined by the three vertices in the "in" array).
-// It will be called recursively, once for each clipping face (face=0, 1, ..., 5) to
-// clip against each of the clipping faces in turn.  When face=6, clip_triangle should
-// simply pass the call on to rasterize_triangle.
-void clip_triangle(driver_state& state, const data_geometry* in[3],int face)
-{
-    const data_geometry * new_data[3];
-    data_geometry temp_dg[3];
-
-    new_data[0] = in[0];
-    new_data[1] = in[1];
-    new_data[2] = in[2];
-
-    temp_dg[0] = *in[0];
-    temp_dg[1] = *in[1];
-    temp_dg[2] = *in[2];
-
+void left_bottom_near(driver_state & state, const data_geometry * in[3], int i, int face, int flag){
+    const data_geometry * new_data[3] = {in[0], in[1], in[2]};
+    //data_geometry temp[3] = {*in[0], *in[1], *in[2]};
     vec4 a = in[0]->gl_Position;
     vec4 b = in[1]->gl_Position;
     vec4 c = in[2]->gl_Position;
 
+    if(a[i] >= -a[3] && b[i] < -b[3] && c[i] < -c[3]){ //a is in
+        float ab;
+        float ca;
+        ab = (-1*b[3] - b[i]) / (a[i] + a[3] - b[3] - b[i]);
+        vec4 a_to_b = ab * a + (1-ab) * b; // a to b
+        ca = (-1*a[3] - a[i]) / (c[i] + c[3] - a[3] - a[i]);
+        vec4 c_to_a = ca * c + (1-ca) * a; // c->a
+
+        data_geometry tempB, tempC;
+        tempB.data = new float[state.floats_per_vertex];
+        tempC.data = new float[state.floats_per_vertex];
+       // if(flag == 2){
+            for(int k = 0; k < state.floats_per_vertex; k++){
+                if(state.interp_rules[k] == interp_type::flat){
+                    tempB.data[k] = in[1]->data[k];
+                    tempC.data[k] = in[2]->data[k];
+                }
+                if(state.interp_rules[k] == interp_type::smooth){
+                    tempB.data[k] = ab * in[0]->data[k] + (1-ab) * in[1]->data[k];
+                    tempC.data[k] = ca * in[2]->data[k] + (1-ca) * in[0]->data[k];
+                } 
+                if(state.interp_rules[k] == interp_type::noperspective){
+                    float b1 = (ab * in[0]->gl_Position[3]) / ((1-ab) * in[1]->gl_Position[3] + ab * in[0]->gl_Position[3]);
+                    float b2 = (ca * in[2]->gl_Position[3]) / ((1-ca) * in[0]->gl_Position[3] + ca * in[2]->gl_Position[3]);
+                    tempB.data[k] = b1 * in[0]->data[k] + (1-b1) * in[1]->data[k];
+                    tempC.data[k] = b2 * in[2]->data[k] + (1-b2) * in[0]->data[k];
+                }
+            }
+            tempB.gl_Position = a_to_b;
+            tempC.gl_Position = c_to_a;
+            new_data[0] = in[0];
+            new_data[1] = &tempB;
+            new_data[2] = &tempC;
+            clip_triangle(state, new_data, face+1);
+        //}       
+    }
+
+    if(a[i] < -a[3] && b[i] >= -b[3] && c[i] < -c[3]){ //b is in
+        float ab;
+        float bc;
+        ab = (-1*b[3] - b[i]) / (a[i] + a[3] - b[3] - b[i]);
+        vec4 a_to_b = ab * a + (1-ab) * b; // a to b
+        bc = (-1*c[3] - c[i]) / (b[i] + b[3] - c[3] - c[i]);
+        vec4 b_to_c = bc * b + (1-bc) * c; // c->a
+
+        data_geometry tempA, tempC;
+        tempA.data = new float[state.floats_per_vertex];
+        tempC.data = new float[state.floats_per_vertex];
+       // if(flag == 2){
+            for(int k = 0; k < state.floats_per_vertex; k++){
+                if(state.interp_rules[k] == interp_type::flat){
+                    tempA.data[k] = in[0]->data[k];
+                    tempC.data[k] = in[2]->data[k];
+                }
+                if(state.interp_rules[k] == interp_type::smooth){
+                    tempA.data[k] = ab * in[0]->data[k] + (1-ab) * in[1]->data[k];
+                    tempC.data[k] = bc * in[1]->data[k] + (1-bc) * in[2]->data[k];
+                } 
+                if(state.interp_rules[k] == interp_type::noperspective){
+                    float b1 = (ab * in[0]->gl_Position[3]) / ((1-ab) * in[1]->gl_Position[3] + ab * in[0]->gl_Position[3]);
+                    float b2 = (bc * in[1]->gl_Position[3]) / ((1-bc) * in[2]->gl_Position[3] + bc * in[1]->gl_Position[3]);
+                    tempA.data[k] = b1 * in[0]->data[k] + (1-b1) * in[1]->data[k];
+                    tempC.data[k] = b2 * in[1]->data[k] + (1-b2) * in[2]->data[k];
+                }
+            }
+            tempA.gl_Position = a_to_b;
+            tempC.gl_Position = b_to_c;
+            new_data[0] = &tempA;
+            new_data[1] = in[1];
+            new_data[2] = &tempC;
+            clip_triangle(state, new_data, face+1);
+       // }
+    }
+
+    if(a[i] < -a[3] && b[i] < -b[3] && c[i] >= -c[3]){ //c is in
+        float ca;
+        float bc;
+        ca = (-1*a[3] - a[i]) / (c[i] + c[3] - a[3] - a[i]);
+        vec4 c_to_a = ca * c + (1-ca) * a; // b -> c
+        bc = (-1*c[3] - c[i]) / (b[i] + b[3] - c[3] - c[i]);
+        vec4 b_to_c = bc * b + (1-bc) * c; // c->a
+
+        data_geometry tempA, tempB;
+        tempA.data = new float[state.floats_per_vertex];
+        tempB.data = new float[state.floats_per_vertex];
+      //  if(flag == 2){
+            for(int k = 0; k < state.floats_per_vertex; k++){
+                if(state.interp_rules[k] == interp_type::flat){
+                    tempA.data[k] = in[0]->data[k];
+                    tempB.data[k] = in[1]->data[k];
+                }
+                if(state.interp_rules[k] == interp_type::smooth){
+                    tempA.data[k] = ca * in[2]->data[k] + (1-ca) * in[0]->data[k];
+                    tempB.data[k] = bc * in[1]->data[k] + (1-bc) * in[2]->data[k];
+                } 
+                if(state.interp_rules[k] == interp_type::noperspective){
+                    float b1 = (bc * in[1]->gl_Position[3]) / ((1-bc) * in[2]->gl_Position[3] + bc * in[1]->gl_Position[3]);
+                    float b2 = (ca * in[2]->gl_Position[3]) / ((1-ca) * in[0]->gl_Position[3] + ca * in[2]->gl_Position[3]);
+                    tempA.data[k] = b2 * in[2]->data[k] + (1-b2) * in[0]->data[k];
+                    tempB.data[k] = b1 * in[1]->data[k] + (1-b1) * in[2]->data[k];
+                }
+            }
+            tempA.gl_Position = c_to_a;
+            tempB.gl_Position = b_to_c;
+            new_data[0] = &tempA;
+            new_data[1] = &tempB;
+            new_data[2] = in[2];
+            clip_triangle(state, new_data, face+1);
+       // }
+    }
+
+    if(a[i] >= -a[3] && b[i] >= -b[3] && c[i] < -c[3]){ // a and b in
+        //std::cout << "a, b in near \n";
+        float bc;
+        float ca;
+        ca = (-1*a[3] - a[i]) / (c[i] + c[3] - a[3] - a[i]);
+        vec4 c_to_a = ca * c + (1-ca) * a; // c -> a
+        bc = (-1*c[3] - c[i]) / (b[i] + b[3] - c[3] - c[i]);
+        vec4 b_to_c = bc * b + (1-bc) * c; // b to c
+
+        data_geometry tempB, tempC; 
+        tempB.data = new float[state.floats_per_vertex];
+        tempC.data = new float[state.floats_per_vertex];
+        if(flag == 1){
+            for(int k = 0; k < state.floats_per_vertex; k++){
+                if(state.interp_rules[k] == interp_type::flat){
+                    tempC.data[k] = in[2]->data[k];
+                }
+                if(state.interp_rules[k] == interp_type::smooth){
+                    tempC.data[k] = bc * in[1]->data[k] + (1-bc) * in[2]->data[k];
+                } 
+                if(state.interp_rules[k] == interp_type::noperspective){
+                    float b1 = (bc * in[1]->gl_Position[3]) / (bc * in[1]->gl_Position[3] + (1-bc) * in[2]->gl_Position[3]);
+                    tempC.data[k] = b1 * in[1]->data[k] + (1-b1) * in[2]->data[k];
+                }
+            }
+
+            tempC.gl_Position = b_to_c;
+            new_data[0] = in[0];
+            new_data[1] = in[1];
+            new_data[2] =  &tempC;
+            
+            clip_triangle(state, new_data, face+1);
+        }
+        if(flag == 2){
+            for(int k = 0; k < state.floats_per_vertex; k++){
+                if(state.interp_rules[k] == interp_type::flat){
+                    tempB.data[k] = in[1]->data[k];
+                    tempC.data[k] = in[2]->data[k];
+                }
+                if(state.interp_rules[k] == interp_type::smooth){
+                    tempB.data[k] = bc * in[1]->data[k] + (1-bc) * in[2]->data[k];
+                    tempC.data[k] = ca * in[2]->data[k] + (1-ca) * in[0]->data[k];
+                } 
+                if(state.interp_rules[k] == interp_type::noperspective){
+                    float b1 = (bc * in[1]->gl_Position[3]) / ((1-bc) * in[2]->gl_Position[3] + bc * in[1]->gl_Position[3]);
+                    float b2 = (ca * in[2]->gl_Position[3]) / ((1-ca) * in[0]->gl_Position[3] + ca * in[2]->gl_Position[3]);
+                    tempB.data[k] = b1 * in[1]->data[k] + (1-b1) * in[2]->data[k];
+                    tempC.data[k] = b2 * in[2]->data[k] + (1-b2) * in[0]->data[k];
+                }
+            }
+            tempB.gl_Position = b_to_c;
+            tempC.gl_Position = c_to_a;
+            new_data[0] = in[0];
+            new_data[1] = &tempB;
+            new_data[2] = &tempC;
+            clip_triangle(state, new_data, face+1);
+        }
+    }
+
+    if(a[i] >= -a[3] && b[i] < -b[3] && c[i] >= -c[3]){ //a and c in
+        float bc;
+        float ab;
+        bc = (-1*c[3] - c[i]) / (b[i] + b[3] - c[3] - c[i]);
+        vec4 b_to_c = bc * b + (1-bc) * c; // b -> c
+        ab = (-1*b[3] - b[i]) / (a[i] + a[3] - b[3] - b[i]);
+        vec4 a_to_b = ab * a + (1-ab) * b; // a->b
+        data_geometry temp1, temp2;
+        
+        temp1.data = new float[state.floats_per_vertex];
+        temp2.data = new float[state.floats_per_vertex];
+        if(flag == 1){
+            for(int k = 0; k < state.floats_per_vertex; k++){
+                if(state.interp_rules[k] == interp_type::flat){
+                    temp1.data[k] = in[1]->data[k];
+                }
+                if(state.interp_rules[k] == interp_type::smooth){
+                    temp1.data[k] = ab * in[0]->data[k] + (1-ab) * in[1]->data[k];
+                } 
+                if(state.interp_rules[k] == interp_type::noperspective){
+                    float b1 = (ab * in[0]->gl_Position[3]) / (ab * in[0]->gl_Position[3] + (1-ab) * in[1]->gl_Position[3]);
+                    temp1.data[k] = b1 * in[0]->data[k] + (1-b1) * in[1]->data[k];
+                }
+            }
+            temp1.gl_Position = a_to_b;
+            new_data[0] = in[0];
+            new_data[1] =  &temp1;
+            new_data[2] = in[2];
+            clip_triangle(state, new_data, face+1);
+        }
+        if(flag == 2){
+            for(int k = 0; k < state.floats_per_vertex; k++){
+                if(state.interp_rules[k] == interp_type::flat){
+                    temp1.data[k] = in[0]->data[k];
+                    temp2.data[k] = in[1]->data[k];
+                }
+                if(state.interp_rules[k] == interp_type::smooth){
+                    temp1.data[k] = ab * in[0]->data[k] + (1-ab) * in[1]->data[k];
+                    temp2.data[k] = bc * in[1]->data[k] + (1-bc) * in[2]->data[k];
+                } 
+                if(state.interp_rules[k] == interp_type::noperspective){
+                    float b1 = (ab * in[0]->gl_Position[3]) / ((1-ab) * in[1]->gl_Position[3] + ab * in[0]->gl_Position[3]);
+                    float b2 = (bc * in[1]->gl_Position[3]) / ((1-bc) * in[2]->gl_Position[3] + bc * in[1]->gl_Position[3]);
+                    temp1.data[k] = b1 * in[0]->data[k] + (1-b1) * in[1]->data[k];
+                    temp2.data[k] = b2 * in[1]->data[k] + (1-b2) * in[2]->data[k];
+                }
+            }
+            temp1.gl_Position = a_to_b;
+            temp2.gl_Position = b_to_c;
+            new_data[0] = &temp1;
+            new_data[1] = &temp2;
+            new_data[2] = in[2];
+            clip_triangle(state, new_data, face+1);
+        }
+    }
+
+    if(a[i] < -a[3] && b[i] >= -b[3] && c[i] >= -c[3]){
+      //  std::cout << "face: " << face << " b and c in\n";
+        float ab = (-1*b[3] - b[i]) / (a[i] + a[3] - b[3] - b[i]);
+        vec4 a_to_b = ab * a + (1-ab) * b;
+        float ca = (-1*a[3] - a[i]) / (c[i] + c[3] - a[3] - a[i]);
+        vec4 c_to_a = ca * c + (1-ca) * a;
+
+        data_geometry temp1, temp2;
+        temp1.data = new float[state.floats_per_vertex];
+        temp2.data = new float[state.floats_per_vertex];
+
+        if (flag == 1){
+            for(int k = 0; k < state.floats_per_vertex; k++){
+                if(state.interp_rules[k] == interp_type::flat){
+                    temp1.data[k] = in[0]->data[k];
+                }
+                if(state.interp_rules[k] == interp_type::smooth){
+                    temp1.data[k] = ca * in[2]->data[k] + (1-ca) * in[0]->data[k];
+                }
+                if(state.interp_rules[k] == interp_type::noperspective){
+                    float b1 = (ca * c[3]) / ((1-ca) * a[3] + ca * c[3]);
+                    temp1.data[k] = b1 * in[2]->data[k] + (1-b1) * in[0]->data[k];
+                }
+            }
+            temp1.gl_Position = c_to_a;
+            new_data[0] = &temp1;
+            new_data[1] = in[1];
+            new_data[2] = in[2];
+            //std::cout << "you made it here 1\n";
+            clip_triangle(state, new_data, face+1);
+        }
+        if(flag == 2){
+            for(int k = 0; k < state.floats_per_vertex; k++){
+                if(state.interp_rules[k] == interp_type::flat){
+                    temp1.data[k] = in[0]->data[k];
+                    temp2.data[k] = in[2]->data[k];
+                }
+                if(state.interp_rules[k] == interp_type::smooth){
+                    temp1.data[k] = ab*in[0]->data[k] + (1-ab)*in[1]->data[k];
+                    temp2.data[k] = ca*in[2]->data[k] + (1-ca)*in[0]->data[k];
+                }
+                if(state.interp_rules[k] == interp_type::noperspective){
+                    float b1 = ab*in[0]->gl_Position[3] / (ab*in[0]->gl_Position[3] + (1-ab)*in[1]->gl_Position[3]);
+                    float b2 = ca*in[2]->gl_Position[3] / (ca*in[2]->gl_Position[3] + (1-ca)*in[0]->gl_Position[3]);
+                    temp1.data[k] = b1*in[0]->data[k] + (1-b1)*in[1]->data[k];
+                    temp2.data[k] = b2*in[2]->data[k] + (1-b2)*in[0]->data[k];
+                }
+
+            }
+            temp1.gl_Position = a_to_b;
+            temp2.gl_Position = c_to_a;
+            new_data[0] = &temp1;
+            new_data[1] = in[1];
+            new_data[2] = &temp2;
+            clip_triangle(state,new_data,face+1);
+        }
+    }
+}
+// This function clips a triangle (defined by the three vertices in the "in" array).
+// It will be called recursively, once for each clipping face (face=0, 1, ..., 5) to
+// clip against each of the clipping faces in turn.  When face=6, clip_triangle should
+// simply pass the call on to rasterize_triangle.
+
+void clip_triangle(driver_state& state, const data_geometry* in[3], int face)
+{
+    //const data_geometry * new_data[3] = {in[0], in[1], in[2]};
+    //data_geometry temp[3] = {*in[0], *in[1], *in[2]};
+    vec4 a = in[0]->gl_Position;
+    vec4 b = in[1]->gl_Position;
+    vec4 c = in[2]->gl_Position;
 
     switch(face){
 
         case 0: //right plane case
         {
-            if (a[0] > a[3] && c[0] > c[3] && b[0] > b[3])
-            {
-                std::cout << "everything is out\n";
-            }
-            if(a[0] <= a[3] && c[0] > c[3] && b[0] > b[3]){
-                std::cout << "a in right\n";
-                float a1;
-                float a2;
-                a1 = (b[3] - b[0]) / (a[0] - a[3] + b[3] - b[0]);
-                vec4 a_p = a1 * a + (1-a1) * b; //a to b
-                a2 = (a[3] - a[0]) / (c[0] - c[3] + a[3] - a[0]);
-                vec4 c_p = a2 * c + (1-a2) * a; // c to a
-
-                temp_dg[1].gl_Position = a_p;
-                temp_dg[2].gl_Position = c_p;
-                new_data[0] = in[0];
-                new_data[1] = &temp_dg[1];
-                new_data[2] = &temp_dg[2];
-
-            }
-
-            if(c[0] <= c[3] && b[0] > b[3] && a[0] > a[3]){ //c is in
-                std::cout << "c in right\n";
-                float a1;
-                float a2;
-                a1 = (a[3] - a[0]) / (c[0] - c[3] + a[3] - a[0]);
-                vec4 c_p = a1 * c + (1-a1) * a; //c to a
-                a2 = (c[3] - c[0]) / (b[0] - b[3] + c[3] - c[0]);
-                vec4 b_p = a2 * b + (1-a2) * c; // b to c
-
-                temp_dg[0].gl_Position = c_p;
-                temp_dg[1].gl_Position = b_p;
-                new_data[0] = &temp_dg[0];
-                new_data[1] = &temp_dg[1];
-                new_data[2] = in[2];
-            }
-
-            if(b[0] <= b[3] && a[0] > a[3] && c[0] > c[3]){ //b is in
-                std::cout << "b in right\n";
-                float a1;
-                float a2;
-                a1 = (c[3] - c[0]) / (b[0] - b[3] + c[3] - c[0]);
-                vec4 b_p = a1 * b + (1-a1) * c; //b to c
-                a2 = (b[3] - b[0]) / (a[0] - a[3] + b[3] - b[0]);
-                vec4 a_p = a2 * a + (1-a2) * b; // a to b
-
-                temp_dg[2].gl_Position = b_p;
-                temp_dg[0].gl_Position = a_p;
-                new_data[0] = &temp_dg[0];
-                new_data[1] = in[1];
-                new_data[2] = &temp_dg[2];
-
-            }
-
-            if(a[0] <= a[3] && b[0] <= b[3] && c[0] > c[3]){ //a and b are in
-                // a and b are in top plane
-                std::cout << "a and b in right\n";
-                float a1;
-                float a2;
-                a1 = (c[3] - c[0]) / (b[0] - b[3] + c[3] - c[0]);
-                vec4 b_p = a1 * b + (1-a1) * c; //b to c
-                a2 = (a[3] - a[0]) / (c[0] - c[3] + a[3] - a[0]);
-                vec4 c_p = a2 * c + (1-a2) * a; // c to a
-
-                new_data[0] = in[0];
-                new_data[1] = in[1];
-                temp_dg[2].gl_Position =  c_p;
-                new_data[2] = &temp_dg[2];
-                clip_triangle(state, new_data, face+1);
-                temp_dg[2].gl_Position = b_p;
-                temp_dg[0].gl_Position = c_p;
-                new_data[0] = &temp_dg[0];
-                new_data[1] = in[1];
-                new_data[2] = &temp_dg[2];
-            }
-
-            if(a[0] <= a[3] && c[0] <= c[3] && b[0] > b[3]){
-                //a and c are in the top plane
-                std::cout << "a and c in right\n";
-                float a1;
-                float a2;
-                a1 = (b[3] - b[0]) / (a[0] - a[3] + b[3] - b[0]);
-                vec4 a_p = a1 * a + (1-a1) * b; //a to b
-                a2 = (c[3] - c[0]) / (b[0] - b[3] + c[3] - c[0]);
-                vec4 b_p = a2 * b + (1-a2) * c; // b to c
-
-                new_data[0] = in[0];
-                temp_dg[1].gl_Position = b_p;
-                new_data[1] = &temp_dg[1];
-                new_data[2] = in[2];
-                clip_triangle(state, new_data, face+1);
-                new_data[0] = in[0];
-                temp_dg[1].gl_Position = a_p;
-                temp_dg[2].gl_Position = b_p;
-                new_data[1] = &temp_dg[1];
-                new_data[2] = &temp_dg[2];
-
-            }
-
-            if(b[0] <= b[3] && c[0] <= c[3] && a[0] > a[3]){
-                //b and c are in the right plane
-                std::cout << "b and c in right\n";
-                float a1;
-                float a2;
-                a1 = (a[3] - a[0]) / (c[0] - c[3] + a[3] - a[0]);
-                vec4 c_p = a1 * c + (1-a1) * a; //c to a
-                a2 = (b[3] - b[0]) / (a[0] - a[3] + b[3] - b[0]);
-                vec4 a_p = a2 * a + (1-a2) * b; // b to a
-
-                temp_dg[0].gl_Position =  a_p;
-                new_data[0] = &temp_dg[0];
-                new_data[1] = in[1];
-                new_data[2] = in[2];
-                clip_triangle(state, new_data, face+1);
-                temp_dg[0].gl_Position = c_p;
-                temp_dg[1].gl_Position = a_p;
-                new_data[0] = &temp_dg[0];
-                new_data[1] = &temp_dg[1];
-                new_data[2] = in[2];
-            }
-
-            if(a[0] <= a[3] && c[0] <= c[3] && b[0] <= b[3]){
-                //std::cout << "a,b,c in\n";
-                new_data[0] = in[0];
-                new_data[1] = in[1];
-                new_data[2] = in[2];
-            }
+            clip_triangle(state, in, face+1);
             break;
         }
         
         case 1: //left plane case
-        {
-            if (a[0] < -a[3] && c[0] < -c[3] && b[0] < -b[3])
-            {
-                std::cout << "everything is out\n";
+        {   
+            if(a[0] >= -a[3] && b[0] >= -b[3] && c[0] >= -c[3]){//all in
+                clip_triangle(state,in,face+1);
             }
-            if(a[0] >= -a[3] && b[0] < -b[3] && c[0] < -c[3]){ 
-                // a is in left 
-                std::cout << "a in left\n";
-                float a1;
-                float a2;
-                a1 = (-1*a[3] - a[0]) / (c[0] + c[3] - a[3] - a[0]);
-                vec4 c_p = a1 * c + (1-a1) * a; // c to a
-                a2 = (-1*b[3] - b[0]) / (a[0] + a[3] - b[3] - b[0]);
-                vec4 a_p = a2 * a + (1-a2) * b; // a to b
-
-                temp_dg[1].gl_Position = a_p;
-                temp_dg[2].gl_Position = c_p;
-                new_data[0] = in[0];
-                new_data[1] = &temp_dg[1];
-                new_data[2] = &temp_dg[2];
+            if(a[0] >= -a[3] && b[0] < -b[3] && c[0] < -c[3]){ //a is in
+                //clip_triangle(state,in,face+1);
+                left_bottom_near(state, in, 0, 1, 2); //i = 0, face = 1
             }
-
-            if(b[0] >= -b[3] && a[0] < -a[3] && c[0] < -c[3]){
-                //std::cout << "b in near \n";
-                std::cout << "b in left\n";
-                float a1;
-                float a2;
-                a1 = (-1*b[3] - b[0]) / (a[0] + a[3] - b[3] - b[0]);
-                vec4 a_p = a1 * a + (1-a1) * b; // a to b
-                a2 = (-1*c[3] - c[0]) / (b[0] + b[3] - c[3] - c[0]);
-                vec4 b_p = a2 * b + (1-a2) * c; // b to c
-
-                temp_dg[2].gl_Position = b_p;
-                temp_dg[0].gl_Position = a_p;
-                new_data[0] = &temp_dg[0];
-                new_data[1] = in[1];
-                new_data[2] = &temp_dg[2];
-                
+            if(a[0] < -a[3] && b[0] >= -b[3] && c[0] < -c[3]){ //b is in
+                //clip_triangle(state,in,face+1);
+                left_bottom_near(state, in, 0, 1, 2);
             }
-
-            if(c[0] >= -c[3] && b[0] < -b[3] && a[0] < -a[3]){ //check c1 case 
-                //std::cout << "c in near \n";
-                std::cout << "c in left\n";
-                float a1;
-                float a2;
-                a1 = (-1*c[3] - c[0]) / (b[0] + b[3] - c[3] - c[0]);
-                vec4 b_p = a1 * b + (1-a1) * c; // b -> c
-                a2 = (-1*a[3] - a[0]) / (c[0] + c[3] - a[3] - a[0]);    
-                vec4 c_p = a2 * c + (1-a2) * a; // c->a
-
-                temp_dg[0].gl_Position = c_p;
-                temp_dg[1].gl_Position = b_p;
-                new_data[0] = &temp_dg[0];
-                new_data[1] = &temp_dg[1];
-                new_data[2] = in[2];
-                
+            if(a[0] < -a[3] && b[0] < -b[3] && c[0] >= -c[3]){ //c is in
+                //clip_triangle(state,in,face+1);
+                left_bottom_near(state, in, 0, 1, 2);
             }
-
-            if(a[0] >= -a[3] && b[0] >= -b[3] && c[0] < -c[3]){ // a and b in
-                //std::cout << "a, b in near \n";
-                std::cout << "a and b in left\n";
-                float a1;
-                float a2;
-                a1 = (-1*a[3] - a[0]) / (c[0] + c[3] - a[3] - a[0]);
-                vec4 c_p = a1 * c + (1-a1) * a; // c -> a
-                a2 = (-1*c[3] - c[0]) / (b[0] + b[3] - c[3] - c[0]);
-                vec4 b_p = a2 * b + (1-a2) * c; // b to c
-
-                temp_dg[2].gl_Position = c_p;
-                new_data[0] = in[0];
-                new_data[1] = in[1];
-                new_data[2] =  &temp_dg[2];
-                clip_triangle(state, new_data, face+1);
-                temp_dg[2].gl_Position = b_p;
-                temp_dg[0].gl_Position = c_p;
-                new_data[0] = &temp_dg[0];
-                new_data[1] = in[1];
-                new_data[2] = &temp_dg[2];
-            } 
-
-            if(a[0] >= -a[3] && c[0] >= -c[3] && b[0] < -b[3]){
-                //std::cout << "a, c in near \n";
-                std::cout << "a and c in left\n";
-                float a1;
-                float a2;
-                a1 = (-1*c[3] - c[0]) / (b[0] + b[3] - c[3] - c[0]);
-                vec4 b_p = a1 * b + (1-a1) * c; // b -> c
-                a2 = (-1*b[3] - b[0]) / (a[0] + a[3] - b[3] - b[0]);
-                vec4 a_p = a2 * a + (1-a2) * b; // a->b
-
-                temp_dg[1].gl_Position = b_p;
-                new_data[0] = in[0];
-                new_data[1] =  &temp_dg[1];
-                new_data[2] = in[2];
-                clip_triangle(state, new_data, face+1);
-                temp_dg[1].gl_Position = a_p;
-                temp_dg[2].gl_Position = b_p;
-                new_data[0] = in[0];
-                new_data[1] = &temp_dg[1];
-                new_data[2] = &temp_dg[2];
-
+            if(a[0] >= -a[3] && b[0] >= -b[3] && c[0] < -c[3]){ //a,b in
+                //clip_triangle(state,in,face+1);
+                left_bottom_near(state, in, 0, 1, 1);
+                left_bottom_near(state, in, 0, 1, 2);
             }
-
-            if(b[0] >= -b[3] && c[0] >= -c[3] && a[0] < -a[3]){
-                //std::cout << "b, c  in  \n";
-                std::cout << "b and c in left\n";
-                float a1;
-                float a2;
-                a1 = (-1*b[3] - b[0]) / (a[0] + a[3] - b[3] - b[0]);
-                vec4 a_p = a1 * a + (1-a1) * b; // a to b
-                a2 = (-1*a[3] - a[0]) / (c[0] + c[3] - a[3] - a[0]);
-                vec4 c_p = a2 * c + (1-a2) * a; // c to a
-
-                temp_dg[0].gl_Position = a_p;
-                new_data[0] = &temp_dg[0];
-                new_data[1] = in[1];
-                new_data[2] = in[2];
-                clip_triangle(state, new_data, face+1);
-                temp_dg[0].gl_Position = c_p;
-                temp_dg[1].gl_Position = a_p;
-                new_data[0] = &temp_dg[0];
-                new_data[1] = &temp_dg[1];
-                new_data[2] = in[2];
-
+            if(a[0] >= -a[3] && b[0] < -b[3] && c[0] >= -c[3]){//a, c in
+                //clip_triangle(state,in,face+1);
+                left_bottom_near(state, in, 0, 1, 1);
+                left_bottom_near(state, in, 0, 1, 2);
             }
-
-            if(b[0] >= -b[3] && c[0] >= -c[3] && a[0] >= -a[3]){
-                new_data[0] = in[0];
-                new_data[1] = in[1];
-                new_data[2] = in[2];
+            if(a[0] < -a[3] && b[0] >= -b[3] && c[0] >= -c[3]){//b, c in
+                left_bottom_near(state, in, 0, 1, 1);
+                left_bottom_near(state, in, 0, 1, 2);
+            }
+            if(a[0] < -a[3] && b[0] < -b[3] && c[0] < -c[3]){//none in
+                return;
             }
             break;
         }
 
         case 2: //top case
         {
-            if (a[1] > a[3] && c[1] > c[3] && b[1] > b[3])
-            {
-                std::cout << "everything is out\n";
-            }
-            if(a[1] <= a[3] && c[1] > c[3] && b[1] > b[3]){
-                //std::cout << "a in\n";
-                float a1;
-                float a2;
-                a1 = (b[3] - b[1]) / (a[1] - a[3] + b[3] - b[1]);
-                vec4 a_p = a1 * a + (1-a1) * b; //a to b
-                a2 = (a[3] - a[1]) / (c[1] - c[3] + a[3] - a[1]);
-                vec4 c_p = a2 * c + (1-a2) * a; // c to a
-
-                temp_dg[1].gl_Position = a_p;
-                temp_dg[2].gl_Position = c_p;
-                new_data[0] = in[0];
-                new_data[1] = &temp_dg[1];
-                new_data[2] = &temp_dg[2];
-
-            }
-
-            if(c[1] <= c[3] && b[1] > b[3] && a[1] > a[3]){
-                //std::cout << "b in\n";
-                float a1;
-                float a2;
-                a1 = (a[3] - a[1]) / (c[1] - c[3] + a[3] - a[1]);
-                vec4 c_p = a1 * c + (1-a1) * a; //c to a
-                a2 = (c[3] - c[1]) / (b[1] - b[3] + c[3] - c[1]);
-                vec4 b_p = a2 * b + (1-a2) * c; // b to c
-
-                temp_dg[0].gl_Position = c_p;
-                temp_dg[1].gl_Position = b_p;
-                new_data[0] = &temp_dg[0];
-                new_data[1] = &temp_dg[1];
-                new_data[2] = in[2];
-            }
-
-            if(b[1] <= b[3] && a[1] > a[3] && c[1] > c[3]){
-                //std::cout << "c in\n";
-                float a1;
-                float a2;
-                a1 = (c[3] - c[1]) / (b[1] - b[3] + c[3] - c[1]);
-                vec4 b_p = a1 * b + (1-a1) * c; //b to c
-                a2 = (b[3] - b[1]) / (a[1] - a[3] + b[3] - b[1]);
-                vec4 a_p = a2 * a + (1-a2) * b; // a to b
-
-                temp_dg[2].gl_Position = b_p;
-                temp_dg[0].gl_Position = a_p;
-                new_data[0] = &temp_dg[0];
-                new_data[1] = in[1];
-                new_data[2] = &temp_dg[2];
-
-            }
-
-            if(a[1] <= a[3] && b[1] <= b[3] && c[1] > c[3]){ 
-                // a and b are in top plane
-                float a1;
-                float a2;
-                a1 = (c[3] - c[1]) / (b[1] - b[3] + c[3] - c[1]);
-                vec4 b_p = a1 * b + (1-a1) * c; //b to c
-                a2 = (a[3] - a[1]) / (c[1] - c[3] + a[3] - a[1]);
-                vec4 c_p = a2 * c + (1-a2) * a; // c to a
-
-                new_data[0] = in[0];
-                new_data[1] = in[1];
-                temp_dg[2].gl_Position =  c_p;
-                new_data[2] = &temp_dg[2];
-                clip_triangle(state, new_data, face+1);
-                temp_dg[2].gl_Position = b_p;
-                temp_dg[0].gl_Position = c_p;
-                new_data[0] = &temp_dg[0];
-                new_data[1] = in[1];
-                new_data[2] = &temp_dg[2];
-            }
-
-            if(a[1] <= a[3] && c[1] <= c[3] && b[1] > b[3]){
-                //a and c are in the top plane
-                float a1;
-                float a2;
-                a1 = (b[3] - b[1]) / (a[1] - a[3] + b[3] - b[1]);
-                vec4 a_p = a1 * a + (1-a1) * b; //a to b
-                a2 = (c[3] - c[1]) / (b[1] - b[3] + c[3] - c[1]);
-                vec4 b_p = a2 * b + (1-a2) * c; // b to c
-
-                new_data[0] = in[0];
-                temp_dg[1].gl_Position = b_p;
-                new_data[1] = &temp_dg[1];
-                new_data[2] = in[2];
-                clip_triangle(state, new_data, face+1);
-                new_data[0] = in[0];
-                temp_dg[1].gl_Position = a_p;
-                temp_dg[2].gl_Position = b_p;
-                new_data[1] = &temp_dg[1];
-                new_data[2] = &temp_dg[2];
-
-            }
-
-            if(b[1] <= b[3] && c[1] <= c[3] && a[1] > a[3]){
-                //b and c are in the top plane
-                float a1;
-                float a2;
-                a1 = (a[3] - a[1]) / (c[1] - c[3] + a[3] - a[1]);
-                vec4 c_p = a1 * c + (1-a1) * a; //c to a
-                a2 = (b[3] - b[1]) / (a[1] - a[3] + b[3] - b[1]);
-                vec4 a_p = a2 * a + (1-a2) * b; // b to a
-
-                temp_dg[0].gl_Position =  a_p;
-                new_data[0] = &temp_dg[0];
-                new_data[1] = in[1];
-                new_data[2] = in[2];
-                clip_triangle(state, new_data, face+1);
-                temp_dg[0].gl_Position = c_p;
-                temp_dg[1].gl_Position = a_p;
-                new_data[0] = &temp_dg[0];
-                new_data[1] = &temp_dg[1];
-                new_data[2] = in[2];
-            }
-            if(a[1] <= a[3] && c[1] <= c[3] && b[1] <= b[3]){
-                //std::cout << "a,b,c in\n";
-                new_data[0] = in[0];
-                new_data[1] = in[1];
-                new_data[2] = in[2];
-            }
+            clip_triangle(state, in, face+1);
             break;
         }
 
         case 3: //bottom case
         {
-            if (a[1] < -a[3] && c[1] < -c[3] && b[1] < -b[3])
-            {
-                std::cout << "everything is out\n";
+            if(a[1] >= -a[3] && b[1] >= -b[3] && c[1] >= -c[3]){//all in
+                clip_triangle(state,in,face+1);
             }
-            if(a[1] >= -a[3] && b[1] < -b[3] && c[1] < -c[3]){
-               // std::cout << "a in near \n";
-                float a1;
-                float a2;
-                a1 = (-1*a[3] - a[1]) / (c[1] + c[3] - a[3] - a[1]);
-                vec4 c_p = a1 * c + (1-a1) * a; // c to a
-                a2 = (-1*b[3] - b[1]) / (a[1] + a[3] - b[3] - b[1]);
-                vec4 a_p = a2 * a + (1-a2) * b; // a to b
-
-                temp_dg[1].gl_Position = c_p;
-                temp_dg[2].gl_Position = a_p;
-                new_data[0] = in[0];
-                new_data[1] = &temp_dg[1];
-                new_data[2] = &temp_dg[2];
+            if(a[1] >= -a[3] && b[1] < -b[3] && c[1] < -c[3]){ //a is in
+                //clip_triangle(state,in,face+1);
+                left_bottom_near(state, in, 1, 3, 2);
             }
-
-            if(b[1] >= -b[3] && a[1] < -a[3] && c[1] < -c[3]){
-                //std::cout << "b in near \n";
-                float a1;
-                float a2;
-                a1 = (-1*b[3] - b[1]) / (a[1] + a[3] - b[3] - b[1]);
-                vec4 a_p = a1 * a + (1-a1) * b; // a to b
-                a2 = (-1*c[3] - c[1]) / (b[1] + b[3] - c[3] - c[1]);
-                vec4 b_p = a2 * b + (1-a2) * c; // b to c
-
-                temp_dg[2].gl_Position = b_p;
-                temp_dg[0].gl_Position = a_p;
-                new_data[0] = &temp_dg[0];
-                new_data[1] = in[1];
-                new_data[2] = &temp_dg[2];
-                
+            if(a[1] < -a[3] && b[1] >= -b[3] && c[1] < -c[3]){ //b is in
+                //clip_triangle(state,in,face+1);
+                left_bottom_near(state, in, 1, 3, 2);
             }
-
-            if(c[1] >= -c[3] && b[1] < -b[3] && a[1] < -a[3]){
-                //std::cout << "c in near \n";
-                float a1;
-                float a2;
-                a1 = (-1*c[3] - c[1]) / (b[1] + b[3] - c[3] - c[1]);
-                vec4 b_p = a1 * b + (1-a1) * c; // b -> c
-                a2 = (-1*a[3] - a[1]) / (c[1] + c[3] - a[3] - a[1]);
-                vec4 c_p = a2 * c + (1-a2) * a; // c->a
-
-                temp_dg[0].gl_Position = b_p;
-                temp_dg[1].gl_Position = c_p;
-                new_data[0] = &temp_dg[0];
-                new_data[1] = &temp_dg[1];
-                new_data[2] = in[2];
-                
+            if(a[1] < -a[3] && b[1] < -b[3] && c[1] >= -c[3]){ //c is in
+                //clip_triangle(state,in,face+1);
+                left_bottom_near(state, in, 1, 3, 2);
             }
-
-            if(a[1] >= -a[3] && b[1] >= -b[3] && c[1] < -c[3]){ // a and b in
-                //std::cout << "a, b in near \n";
-                float a1;
-                float a2;
-                a1 = (-1*a[3] - a[1]) / (c[1] + c[3] - a[3] - a[1]);
-                vec4 c_p = a1 * c + (1-a1) * a; // c -> a
-                a2 = (-1*c[3] - c[1]) / (b[1] + b[3] - c[3] - c[1]);
-                vec4 b_p = a2 * b + (1-a2) * c; // b to c
-
-                temp_dg[2].gl_Position = c_p;
-                new_data[0] = in[0];
-                new_data[1] = in[1];
-                new_data[2] =  &temp_dg[2];
-               
-                clip_triangle(state, new_data, face+1);
-                temp_dg[2].gl_Position = b_p;
-                temp_dg[0].gl_Position = c_p;
-                new_data[1] = in[1];
-                new_data[2] = &temp_dg[2];
-                new_data[0] = &temp_dg[0];
-            } 
-
-            if(a[1] >= -a[3] && c[1] >= -c[3] && b[1] < -b[3]){
-                //std::cout << "a, c in near \n";
-                float a1;
-                float a2;
-                a1 = (-1*c[3] - c[1]) / (b[1] + b[3] - c[3] - c[1]);
-                vec4 b_p = a1 * b + (1-a1) * c; // b -> c
-                a2 = (-1*b[3] - b[1]) / (a[1] + a[3] - b[3] - b[1]);
-                vec4 a_p = a2 * a + (1-a2) * b; // a->b
-
-                temp_dg[1].gl_Position = b_p;
-                new_data[0] = in[0];
-                new_data[1] =  &temp_dg[1];
-                new_data[2] = in[2];
-                clip_triangle(state, new_data, face+1);
-                temp_dg[1].gl_Position = a_p;
-                temp_dg[2].gl_Position = b_p;
-                new_data[0] = in[0];
-                new_data[1] = &temp_dg[1];
-                new_data[2] = &temp_dg[2];
-
+            if(a[1] >= -a[3] && b[1] >= -b[3] && c[1] < -c[3]){ //a,b in
+                //clip_triangle(state,in,face+1);
+                left_bottom_near(state, in, 1, 3, 1);
+                left_bottom_near(state, in, 1, 3, 2);
             }
-
-            if(b[1] >= -b[3] && c[1] >= -c[3] && a[1] < -a[3]){
-                //std::cout << "b, c  in  \n";
-                float a1;
-                float a2;
-                a1 = (-1*b[3] - b[1]) / (a[1] + a[3] - b[3] - b[1]);
-                vec4 a_p = a1 * a + (1-a1) * b; // a to b
-                a2 = (-1*a[3] - a[1]) / (c[1] + c[3] - a[3] - a[1]);
-                vec4 c_p = a2 * c + (1-a2) * a; // c to a
-
-                temp_dg[0].gl_Position = a_p;
-                new_data[0] = &temp_dg[0];
-                new_data[1] = in[1];
-                new_data[2] = in[2];
-                clip_triangle(state, new_data, face+1);
-                temp_dg[0].gl_Position = c_p;
-                temp_dg[1].gl_Position = a_p;
-                new_data[0] = &temp_dg[0];
-                new_data[1] = &temp_dg[1];
-                new_data[2] = in[2];
-
+            if(a[1] >= -a[3] && b[1] < -b[3] && c[1] >= -c[3]){//a, c in
+                //clip_triangle(state,in,face+1);
+                left_bottom_near(state, in, 1, 3, 1);
+                left_bottom_near(state, in, 1, 3, 2);
             }
-
-            if(b[1] >= -b[3] && c[1] >= -c[3] && a[1] >= -a[3]){
-                new_data[0] = in[0];
-                new_data[1] = in[1];
-                new_data[2] = in[2];
+            if(a[1] < -a[3] && b[1] >= -b[3] && c[1] >= -c[3]){//b, c in
+                left_bottom_near(state, in, 1, 3, 1);
+                left_bottom_near(state, in, 1, 3, 2);
+            }
+            if(a[1] < -a[3] && b[1] < -b[3] && c[1] < -c[3]){//none in
+                return;
             }
             break;
         }
 
         case 4: //far 
         {
-            if (a[2] > a[3] && c[2] > c[3] && b[2] > b[3])
-            {
-                std::cout << "everything is out\n";
-            }
-            if(a[2] <= a[3] && c[2] > c[3] && b[2] > b[3]){
-                //std::cout << "a in\n";
-                float a1;
-                float a2;
-                a1 = (b[3] - b[2]) / (a[2] - a[3] + b[3] - b[2]);
-                vec4 a_p = a1 * a + (1-a1) * b; //a to b
-                a2 = (a[3] - a[2]) / (c[2] - c[3] + a[3] - a[2]);
-                vec4 b_p = a2 * c + (1-a2) * a; // c to a
-
-                temp_dg[0].gl_Position = a_p;
-                temp_dg[1].gl_Position = b_p;
-                new_data[0] = in[0];
-                new_data[1] = &temp_dg[0];
-                new_data[2] = &temp_dg[1];
-
-            }
-
-            if(c[2] <= c[3] && b[2] > b[3] && a[2] > a[3]){
-                //std::cout << "b in\n";
-                float a1;
-                float a2;
-                a1 = (a[3] - a[2]) / (c[2] - c[3] + a[3] - a[2]);
-                vec4 c_p = a1 * c + (1-a1) * a; //c to a
-                a2 = (c[3] - c[2]) / (b[2] - b[3] + c[3] - c[2]);
-                vec4 b_p = a2 * b + (1-a2) * c; // c to a
-
-                temp_dg[0].gl_Position = c_p;
-                temp_dg[1].gl_Position = b_p;
-                new_data[2] = in[2];
-                new_data[0] = &temp_dg[0];
-                new_data[1] = &temp_dg[1];
-            }
-
-            if(b[2] <= b[3] && a[2] > a[3] && c[2] > c[3]){
-                //std::cout << "c in\n";
-                float a1;
-                float a2;
-                a1 = (c[3] - c[2]) / (b[2] - b[3] + c[3] - c[2]);
-                vec4 b_p = a1 * b + (1-a1) * c; //c to a
-                a2 = (b[3] - b[2]) / (a[2] - a[3] + b[3] - b[2]);
-                vec4 a_p = a2 * a + (1-a2) * b; // c to a
-
-                temp_dg[0].gl_Position = b_p;
-                temp_dg[1].gl_Position = a_p;
-                new_data[1] = in[1];
-                new_data[0] = &temp_dg[0];
-                new_data[2] = &temp_dg[1];
-
-            }
-
-            if(a[2] <= a[3] && b[2] <= b[3] && c[2] > c[3]){
-                //std::cout << "b and c in\n";
-                float a1;
-                float a2;
-                a1 = (c[3] - c[2]) / (b[2] - b[3] + c[3] - c[2]);
-                vec4 b_p = a1 * b + (1-a1) * c; //c to a
-                a2 = (a[3] - a[2]) / (c[2] - c[3] + a[3] - a[2]);
-                vec4 c_p = a2 * c + (1-a2) * a; // c to a
-
-                new_data[0] = in[0];
-                new_data[1] = in[1];
-                temp_dg[2].gl_Position =  c_p;
-                new_data[2] = &temp_dg[2];
-                clip_triangle(state, new_data, face+1);
-                new_data[1] = in[1];
-                temp_dg[2].gl_Position = b_p;
-                temp_dg[0].gl_Position = c_p;
-                new_data[2] = &temp_dg[2];
-                new_data[0] = &temp_dg[0];
-
-            }
-
-            if(a[2] <= a[3] && c[2] <= c[3] && b[2] > b[3]){
-                //std::cout << "a and c in\n";
-                float a1;
-                float a2;
-                a1 = (b[3] - b[2]) / (a[2] - a[3] + b[3] - b[2]);
-                vec4 a_p = a1 * a + (1-a1) * b; //a to b
-                a2 = (c[3] - c[2]) / (b[2] - b[3] + c[3] - c[2]);
-                vec4 b_p = a2 * b + (1-a2) * c; // b to c
-
-                new_data[0] = in[0];
-                new_data[2] = in[2];
-                temp_dg[1].gl_Position =  b_p;
-                new_data[1] = &temp_dg[1];
-                clip_triangle(state, new_data, face+1);
-                new_data[0] = in[0];
-                temp_dg[1].gl_Position = a_p;
-                temp_dg[2].gl_Position = b_p;
-                new_data[1] = &temp_dg[1];
-                new_data[2] = &temp_dg[2];
-
-            }
-
-            if(b[2] <= b[3] && c[2] <= c[3] && a[2] > a[3]){
-                //std::cout << "a and b in\n";
-                float a1;
-                float a2;
-                a1 = (a[3] - a[2]) / (c[2] - c[3] + a[3] - a[2]);
-                vec4 c_p = a1 * c + (1-a1) * a; //c to a
-                a2 = (b[3] - b[2]) / (a[2] - a[3] + b[3] - b[2]);
-                vec4 a_p = a2 * a + (1-a2) * b; // b to a
-
-                new_data[1] = in[1];
-                new_data[2] = in[2];
-                temp_dg[0].gl_Position =  a_p;
-                new_data[0] = &temp_dg[0];
-                clip_triangle(state, new_data, face+1);
-                new_data[2] = in[2];
-                temp_dg[0].gl_Position = c_p;
-                temp_dg[1].gl_Position = a_p;
-                new_data[0] = &temp_dg[0];
-                new_data[1] = &temp_dg[1];
-            }
-            if(a[2] <= a[3] && c[2] <= c[3] && b[2] <= b[3]){
-                //std::cout << "a,b,c in\n";
-                new_data[0] = in[0];
-                new_data[1] = in[1];
-                new_data[2] = in[2];
-            }
+            clip_triangle(state, in, face+1);
+            //right_top_far(state,in,2,4,1);
+            //right_top_far(state,in,2,4,2);
             break;
         }
 
-        case 5:
+        case 5: //near case
         {
-            if (a[2] < -a[3] && c[2] < -c[3] && b[2] < -b[3])
-            {
-                std::cout << "everything is out\n";
+            if(a[2] >= -a[3] && b[2] >= -b[3] && c[2] >= -c[3]){//all in
+                clip_triangle(state,in,face+1);
             }
-            if(a[2] >= -a[3] && b[2] < -b[3] && c[2] < -c[3]){
-               // std::cout << "a in near \n";
-                float a1;
-                float a2;
-                a1 = (-1*b[3] - b[2]) / (a[2] + a[3] - b[3] - b[2]);
-                vec4 a_p = a1 * a + (1-a1) * b; // a -> b
-                a2 = (-1*a[3] - a[2]) / (c[2] + c[3] - a[3] - a[2]);
-                vec4 c_p = a2 * c + (1-a2) * a; // c -> a
-
-                temp_dg[0].gl_Position = a_p;
-                temp_dg[1].gl_Position = c_p;
-                new_data[0] = in[0];
-                new_data[1] = &temp_dg[0];
-                new_data[2] = &temp_dg[1];
+            if(a[2] >= -a[3] && b[2] < -b[3] && c[2] < -c[3]){ //a is in
+                //clip_triangle(state,in,face+1);
+                left_bottom_near(state, in, 2, 5, 2);
             }
-
-            if(b[2] >= -b[3] && a[2] < -a[3] && c[2] < -c[3]){
-                //std::cout << "b in near \n";
-                float a1;
-                float a2;
-                a1 = (-1*a[3] - a[2]) / (b[2] + b[3] - a[3] - a[2]);
-                vec4 a_p = a1 * b + (1-a1) * a; // b -> a
-                a2 = (-1*b[3] - b[2]) / (c[2] + c[3] - b[3] - b[2]);
-                vec4 b_p = a2 * c + (1-a2) * b; // c -> b
-
-                temp_dg[0].gl_Position = b_p;
-                temp_dg[2].gl_Position = a_p;
-                new_data[0] = &temp_dg[0];
-                new_data[1] = in[1];
-                new_data[2] = &temp_dg[2];
-                
+            if(a[2] < -a[3] && b[2] >= -b[3] && c[2] < -c[3]){ //b is in
+                //clip_triangle(state,in,face+1);
+                left_bottom_near(state, in, 2, 5, 2);
             }
-
-            if(c[2] >= -c[3] && b[2] < -b[3] && a[2] < -a[3]){
-                //std::cout << "c in near \n";
-                float a1;
-                float a2;
-                a1 = (-1*c[3] - c[2]) / (b[2] + b[3] - c[3] - c[2]);
-                vec4 b_p = a1 * b + (1-a1) * c; // b -> c
-                a2 = (-1*a[3] - a[2]) / (c[2] + c[3] - a[3] - a[2]);
-                vec4 a_p = a2 * c + (1-a2) * a; // c->a
-
-                temp_dg[0].gl_Position = a_p;
-                temp_dg[1].gl_Position = b_p;
-                new_data[0] = &temp_dg[0];
-                new_data[1] = &temp_dg[1];
-                new_data[2] = in[2];
-                
+            if(a[2] < -a[3] && b[2] < -b[3] && c[2] >= -c[3]){ //c is in
+                //clip_triangle(state,in,face+1);
+                left_bottom_near(state, in, 2, 5, 2);
             }
-
-            if(a[2] >= -a[3] && b[2] >= -b[3] && c[2] < -c[3]){ // a and b in
-                //std::cout << "a, b in near \n";
-                float a1;
-                float a2;
-                a1 = (-1*c[3] - c[2]) / (a[2] + a[3] - c[3] - c[2]);
-                vec4 a_p = a1 * a + (1-a1) * c; // a -> c
-                a2 = (-1*b[3] - b[2]) / (c[2] + c[3] - b[3] - b[2]);
-                vec4 b_p = a2 * c + (1-a2) * b; // c->b
-
-                temp_dg[2].gl_Position = a_p;
-                new_data[0] = in[0];
-                new_data[1] = in[1];
-                new_data[2] =  &temp_dg[2];
-               
-                clip_triangle(state, new_data, face+1);
-                temp_dg[0].gl_Position = a_p;
-                temp_dg[1].gl_Position = b_p;
-                new_data[0] = &temp_dg[0];
-                new_data[1] = &temp_dg[1];
-                new_data[2] = in[1];
+            if(a[2] >= -a[3] && b[2] >= -b[3] && c[2] < -c[3]){ //a,b in
+                //clip_triangle(state,in,face+1);
+                left_bottom_near(state, in, 2, 5, 1);
+                left_bottom_near(state, in, 2, 5, 2);
             }
-
-            if(a[2] >= -a[3] && c[2] >= -c[3] && b[2] < -b[3]){
-                //std::cout << "a, c in near \n";
-                float a1;
-                float a2;
-                a1 = (-1*c[3] - c[2]) / (b[2] + b[3] - c[3] - c[2]);
-                vec4 c_p = a1 * b + (1-a1) * c; // b -> c
-                a2 = (-1*b[3] - b[2]) / (a[2] + a[3] - b[3] - b[2]);
-                vec4 a_p = a2 * a + (1-a2) * b; // a->b
-
-                temp_dg[0].gl_Position = a_p;
-                new_data[0] = in[0];
-                new_data[1] =  &temp_dg[0];
-                new_data[2] = in[2];
-                clip_triangle(state, new_data, face+1);
-                temp_dg[0].gl_Position = a_p;
-                temp_dg[1].gl_Position = c_p;
-                new_data[0] = &temp_dg[0];
-                new_data[1] = &temp_dg[1];
-                new_data[2] = in[2];
+            if(a[2] >= -a[3] && b[2] < -b[3] && c[2] >= -c[3]){//a, c in
+                //clip_triangle(state,in,face+1);
+                left_bottom_near(state, in, 2, 5, 1);
+                left_bottom_near(state, in, 2, 5, 2);
             }
-
-            if(b[2] >= -b[3] && c[2] >= -c[3] && a[2] < -a[3]){
-                //std::cout << "b, c  in near \n";
-                float a1;
-                float a2;
-                a1 = (-1*b[3] - b[2]) / (a[2] + a[3] - b[3] - b[2]);
-                vec4 a_p = a1 * a + (1-a1) * b;
-                a2 = (-1*a[3] - a[2]) / (c[2] + c[3] - a[3] - a[2]);
-                vec4 c_p = a2 * c + (1-a2) * a;
-
-                temp_dg[0].gl_Position = a_p;
-                new_data[0] = &temp_dg[0];
-                new_data[1] = in[1];
-                new_data[2] = in[2];
-                clip_triangle(state, new_data, face+1);
-                temp_dg[0].gl_Position = c_p;
-                temp_dg[1].gl_Position = a_p;
-                new_data[0] = &temp_dg[0];
-                new_data[1] = &temp_dg[1];
-                new_data[2] = in[2];
-
+            if(a[2] < -a[3] && b[2] >= -b[3] && c[2] >= -c[3]){//b, c in
+                left_bottom_near(state, in, 2, 5, 1);
+                left_bottom_near(state, in, 2, 5, 2);
             }
-            if(b[2] >= -b[3] && c[2] >= -c[3] && a[2] >= -a[3]){
-                new_data[0] = in[0];
-                new_data[1] = in[1];
-                new_data[2] = in[2];
+            if(a[2] < -a[3] && b[2] < -b[3] && c[2] < -c[3]){//none in
+                return;
             }
             break;
-        }
-    } 
+        } 
+    }
 
     if(face==6)
     {
+        //std::cout << "i'm gonna rasterize now\n";
         rasterize_triangle(state, in);
         return;
     }
     //std::cout<<"TODO: implement clipping. (The current code passes the triangle through without clipping them.)"<<std::endl;
     //clip_triangle(state,in,face+1);
-    clip_triangle(state,new_data,face+1);
 }
 
 // Rasterize the triangle defined by the three vertices in the "in" array.  This
@@ -965,22 +643,33 @@ void rasterize_triangle(driver_state& state, const data_geometry* in[3])
     vec2 B = {Bx,By};
     vec2 C = {Cx,Cy};
 
+    float minX = std::min(Ax, std::min(Bx, Cx));
+    float maxX = std::max(Ax, std::max(Bx, Cx));
+    float minY = std::min(Ay, std::min(By, Cy));
+    float maxY = std::max(Ay, std::max(By, Cy));
+
 
     float area_abc = (C[0] - A[0]) * (B[1] - A[1]) - (C[1] - A[1]) * (B[0] - A[0]);
 
+    if(minX < 0)
+        minX = 0;
+    if(maxX > state.image_width)
+        maxX = state.image_width;
+    if(minY < 0)
+        minY = 0;
+    if(maxY > state.image_height)
+        maxY = state.image_height;
 
-    for(int i = 0; i < state.image_width; i++){
-        for (int j = 0; j < state.image_height; j++){
+
+    for(int i = minX; i < maxX; i++){
+        for (int j = minY; j < maxY; j++){
 
             vec2 P = {(float)i,(float)j};
             int index = i + j * state.image_width;
 
             float area_pbc = (P[0] - B[0]) * (C[1] - B[1]) - (P[1] - B[1]) * (C[0] - B[0]); // cross((p - b), (c-b))
-            //std::cout << "area pbc: " << area_pbc << " ";
             float area_pca = (P[0] - C[0]) * (A[1] - C[1]) - (P[1] - C[1]) * (A[0] - C[0]); // cross ((P-C),(A-C))
-            //std::cout << "area pca: " << area_pca << " ";
             float area_pba = (P[0] - A[0]) * (B[1] - A[1]) - (P[1] - A[1]) * (B[0] - A[0]); // cross ((P-A), (B-A))
-            //std::cout << "area pba: " << area_pba << " " << std::endl;
 
             float alpha_p = area_pbc / area_abc;
             float beta_p = area_pca / area_abc;
@@ -1014,7 +703,7 @@ void rasterize_triangle(driver_state& state, const data_geometry* in[3])
                     }
                     state.fragment_shader(frag, out, state.uniform_data);
                     float r = out.output_color[0] * 255;
-                    float g = out.output_color[1] * 255;
+                    float   g = out.output_color[1] * 255;
                     float b = out.output_color[2] * 255;
                     state.image_color[index] = make_pixel(r,g,b);
                     state.image_depth[index] = depth;
@@ -1026,4 +715,6 @@ void rasterize_triangle(driver_state& state, const data_geometry* in[3])
 
     //std::cout<<"TODO: implement rasterization"<<std::endl;
 }
+
+
 
